@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
 project(SkiaSample)
 
+set(CMAKE_C_COMPILER clang)
+set(CMAKE_CXX_COMPILER clang++)
+
 set(SKIA_DIR "$ENV{HOME}/work/skia/skia")
 set(SKIA_OUT "$ENV{HOME}/work/skia/out/vulkan")
 

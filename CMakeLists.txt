@@ -29,6 +29,6 @@ target_link_libraries(sample
     vulkan
     fontconfig
     ${FREETYPE_LIBRARIES}
-    ${glfw3_LIBRARIES}
+    glfw
     ${Vulkan_LIBRARIES}
 )

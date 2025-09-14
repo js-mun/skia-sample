@@ -10,6 +10,7 @@ set(SKIA_OUT "$ENV{HOME}/work/skia/out/vulkan")
 find_package(Freetype REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(Vulkan REQUIRED)
+find_package(GLEW REQUIRED)
 
 include_directories(
     ${SKIA_DIR}
@@ -17,6 +18,7 @@ include_directories(
     ${FREETYPE_INCLUDE_DIRS}
     ${glfw3_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
+    ${GLEW_INCLUDE_DIRS}
 )
 
 add_executable(sample main.cpp)
@@ -31,4 +33,5 @@ target_link_libraries(sample
     ${FREETYPE_LIBRARIES}
     glfw
     ${Vulkan_LIBRARIES}
+    GLEW::GLEW
 )

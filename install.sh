@@ -16,6 +16,8 @@ sudo apt install -y python3 git curl build-essential cmake ninja-build libfreety
 sudo apt install -y libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xinerama0-dev libxrandr-dev libxinerama-dev libxcursor-dev
 # GLU
 sudo apt install -y libglu1-mesa-dev freeglut3-dev mesa-common-dev
+# GLEW
+sudo apt install -y libglew-dev
 
 # ----------------------------------------
 # depot_tools 설치

@@ -1,5 +1,3 @@
-
-
 #define GLFW_INCLUDE_VULKAN
 
 #include <iostream>
@@ -36,57 +34,10 @@ struct VulkanContext {
     VkSwapchainKHR swapchain;
     VkFormat format;
     VkExtent2D extent;
-    VkCommandPool cmdPool;
     std::vector<VkImage> images;
+    std::vector<VkImageView> imageViews;
     std::vector<sk_sp<SkSurface>> skSurfaces;
 };
-
-// 단일 커맨드 버퍼 시작
-VkCommandBuffer beginSingleTimeCommands(VkDevice device, VkCommandPool pool) {
-    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = pool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer cmd;
-    vkAllocateCommandBuffers(device, &allocInfo, &cmd);
-
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
-    return cmd;
-}
-
-// 단일 커맨드 버퍼 종료
-void endSingleTimeCommands(VkDevice device, VkCommandPool pool, VkCommandBuffer cmd, VkQueue queue) {
-    vkEndCommandBuffer(cmd);
-    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
-    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(queue);
-    vkFreeCommandBuffers(device, pool, 1, &cmd);
-}
-
-// 이미지 레이아웃 전환
-void transitionImageLayout(VkCommandBuffer cmd, VkImage image, VkFormat, VkImageLayout oldLayout, VkImageLayout newLayout) {
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-
-    vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-}
 
 bool setupVulkan(GLFWwindow* window, VulkanContext &vkCtx, sk_sp<GrDirectContext> &skContext) {
     // --- Vulkan Instance ---
@@ -260,31 +211,41 @@ bool setupVulkan(GLFWwindow* window, VulkanContext &vkCtx, sk_sp<GrDirectContext
         return false;
     }
 
-    // Create Skia surfaces
+    // --- Create Skia surfaces for each swapchain image ---
     vkCtx.skSurfaces.resize(vkCtx.images.size());
     for (size_t i = 0; i < vkCtx.images.size(); ++i) {
-        // 1. 레이아웃 전환
-        VkCommandBuffer cmd = beginSingleTimeCommands(vkCtx.device, vkCtx.cmdPool);
-        transitionImageLayout(cmd, vkCtx.images[i], vkCtx.format, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        endSingleTimeCommands(vkCtx.device, vkCtx.cmdPool, cmd, vkCtx.queue);
-
-        // 2. Skia Wrapping
         GrVkImageInfo imgInfo{};
         imgInfo.fImage = vkCtx.images[i];
         imgInfo.fAlloc = {};
-        imgInfo.fImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        imgInfo.fImageLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         imgInfo.fFormat = vkCtx.format;
         imgInfo.fLevelCount = 1;
         imgInfo.fCurrentQueueFamily = vkCtx.queueFamilyIndex;
 
+        std::cout << "VkImage handle: " << imgInfo.fImage
+            << ", fAlloc: " << imgInfo.fAlloc.fMemory
+            << ", layout: " << imgInfo.fImageLayout
+            << ", format: " << imgInfo.fFormat
+            << ", levelCount: " << imgInfo.fLevelCount
+            << ", queueFamily: " << imgInfo.fCurrentQueueFamily
+            << std::endl;
+
+
         GrBackendRenderTarget backendRT = GrBackendRenderTargets::MakeVk(WIDTH, HEIGHT, imgInfo);
         SkSurfaceProps props(0, kUnknown_SkPixelGeometry);
-        vkCtx.skSurfaces[i] = SkSurfaces::WrapBackendRenderTarget(skContext.get(), backendRT, kTopLeft_GrSurfaceOrigin, kRGBA_8888_SkColorType, nullptr, &props);
-        std::cerr << "create Skia Surface[" << i << "] " << vkCtx.skSurfaces[i] << std::endl;
 
+        vkCtx.skSurfaces[i] = SkSurfaces::WrapBackendRenderTarget(
+            skContext.get(),
+            backendRT,
+            kTopLeft_GrSurfaceOrigin,
+            kRGBA_8888_SkColorType,
+            nullptr,
+            &props
+        );
+        std::cout << "Check SkSurface [" << i << "] : " << vkCtx.skSurfaces[i] << std::endl;
         if (!vkCtx.skSurfaces[i]) {
-            std::cerr << "Failed to create Skia Surface[" << i << "]\n";
-            // return false;
+            std::cerr << "Failed to create Skia Surface[" << i << "]" << std::endl;
+            return false;
         }
     }
 

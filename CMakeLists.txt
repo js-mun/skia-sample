@@ -7,10 +7,14 @@ set(CMAKE_CXX_COMPILER clang++)
 set(SKIA_DIR "$ENV{HOME}/work/skia/skia")
 set(SKIA_OUT "$ENV{HOME}/work/skia/out/vulkan")
 
+add_definitions(-DSK_GANESH)
+
 find_package(Freetype REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(GLEW REQUIRED)
+find_package(OpenGL REQUIRED)
+
 
 include_directories(
     ${SKIA_DIR}
@@ -19,6 +23,7 @@ include_directories(
     ${glfw3_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
     ${GLEW_INCLUDE_DIRS}
+    ${OpenGL_INCLUDE_DIRS}
 )
 
 add_executable(sample main.cpp)
@@ -34,4 +39,5 @@ target_link_libraries(sample
     glfw
     ${Vulkan_LIBRARIES}
     GLEW::GLEW
+    OpenGL::GL
 )

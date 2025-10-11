@@ -1,319 +1,370 @@
+#define GLFW_INCLUDE_VULKAN
+
 #include <iostream>
 #include <vector>
-#include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
-#include "include/gpu/ganesh/GrDirectContext.h"
-#include "include/gpu/ganesh/vk/GrVkDirectContext.h"
-#include "include/core/SkSurface.h"
+
+// Skia includes
 #include "include/core/SkCanvas.h"
-#include "include/core/SkPaint.h"
-#include "include/core/SkRect.h"
 #include "include/core/SkColor.h"
-#include "include/gpu/vk/VulkanBackendContext.h"
-#include "include/gpu/ganesh/vk/GrVkTypes.h"
-
-// #include "include/gpu/vk/GrVkImageInfo.h"
-#include "include/gpu/ganesh/vk/GrVkBackendSurface.h"
+#include "include/core/SkColorSpace.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkPath.h"
 #include "include/core/SkSurface.h"
 
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
+#include "include/gpu/ganesh/vk/GrVkBackendSurface.h"
+#include "include/gpu/ganesh/vk/GrVkDirectContext.h"
+#include "include/gpu/ganesh/vk/GrVkTypes.h"
+#include "include/gpu/vk/VulkanBackendContext.h"
 
+#define WIDTH 800
+#define HEIGHT 600
 
-// Vulkan 전역 변수
-VkInstance instance;
-VkPhysicalDevice physicalDevice;
-VkDevice device;
-VkQueue graphicsQueue;
-uint32_t graphicsQueueIndex;
-VkSurfaceKHR surface;
-VkSwapchainKHR swapchain;
-std::vector<VkImage> swapchainImages;
-std::vector<VkImageView> swapchainImageViews;
-std::vector<SkSurface*> skiaSurfaces;
-GrDirectContext* skiaContext = nullptr;
+// 구조체로 Vulkan 객체 관리
+struct VulkanContext
+{
+    VkInstance instance;
+    VkPhysicalDevice physicalDevice;
+    VkDevice device;
+    VkSurfaceKHR surface;
+    VkQueue queue;
+    uint32_t queueFamilyIndex;
+    VkSwapchainKHR swapchain;
+    VkFormat format;
+    VkExtent2D extent;
+    VkCommandPool cmdPool;
+    std::vector<VkImage> images;
+    std::vector<sk_sp<SkSurface>> skSurfaces;
+};
 
-// Vulkan 동기화 객체
-std::vector<VkFence> inFlightFences;
-std::vector<VkSemaphore> imageAvailableSemaphores;
-std::vector<VkSemaphore> renderFinishedSemaphores;
-const int MAX_FRAMES_IN_FLIGHT = 2;
+bool setupVulkan(GLFWwindow *window, VulkanContext &vkCtx, sk_sp<GrDirectContext> &skContext)
+{
+    // --- Vulkan Instance ---
+    VkApplicationInfo appInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    appInfo.pApplicationName = "Skia Vulkan Example";
+    appInfo.apiVersion = VK_API_VERSION_1_3;
 
-// Vulkan 및 Skia 리소스 해제
-void cleanup() {
-    for (auto surface : skiaSurfaces) {
-        surface->unref();
+    uint32_t glfwExtCount = 0;
+    const char **glfwExts = glfwGetRequiredInstanceExtensions(&glfwExtCount);
+
+    VkInstanceCreateInfo instInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instInfo.pApplicationInfo = &appInfo;
+    instInfo.enabledExtensionCount = glfwExtCount;
+    instInfo.ppEnabledExtensionNames = glfwExts;
+
+    if (vkCreateInstance(&instInfo, nullptr, &vkCtx.instance) != VK_SUCCESS)
+    {
+        std::cerr << "Failed to create Vulkan instance\n";
+        return false;
     }
-    skiaContext->releaseResourcesAndAbandonContext();
-    skiaContext->unref();
-    
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-        vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
-        vkDestroyFence(device, inFlightFences[i], nullptr);
+
+    // --- Vulkan Surface via GLFW ---
+    if (glfwCreateWindowSurface(vkCtx.instance, window, nullptr, &vkCtx.surface) != VK_SUCCESS)
+    {
+        std::cerr << "Failed to create GLFW Vulkan surface\n";
+        return false;
     }
 
-    for (auto imageView : swapchainImageViews) {
-        vkDestroyImageView(device, imageView, nullptr);
-    }
-    vkDestroySwapchainKHR(device, swapchain, nullptr);
-    vkDestroySurfaceKHR(instance, surface, nullptr);
-    vkDestroyDevice(device, nullptr);
-    vkDestroyInstance(instance, nullptr);
-    glfwTerminate();
-}
-
-// Vulkan 인스턴스 생성
-bool createVulkanInstance() {
-    VkApplicationInfo appInfo{};
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "Skia Vulkan Full Example";
-    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.pEngineName = "No Engine";
-    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_0;
-
-    VkInstanceCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    createInfo.pApplicationInfo = &appInfo;
-    
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions;
-    glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-    std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-    createInfo.ppEnabledExtensionNames = extensions.data();
-
-    return vkCreateInstance(&createInfo, nullptr, &instance) == VK_SUCCESS;
-}
-
-// 물리 디바이스 및 논리 디바이스 생성
-bool createLogicalDevice() {
+    // --- Physical Device ---
     uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-    if (deviceCount == 0) return false;
+    vkEnumeratePhysicalDevices(vkCtx.instance, &deviceCount, nullptr);
     std::vector<VkPhysicalDevice> devices(deviceCount);
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-    
-    physicalDevice = devices[0]; // 단순화
+    vkEnumeratePhysicalDevices(vkCtx.instance, &deviceCount, devices.data());
+    vkCtx.physicalDevice = devices[0];
 
-    VkDeviceQueueCreateInfo queueCreateInfo{};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = 0;
-    queueCreateInfo.queueCount = 1;
+    // --- Queue Family ---
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(vkCtx.physicalDevice, &queueFamilyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(vkCtx.physicalDevice, &queueFamilyCount, queueFamilies.data());
+
+    bool found = false;
+    for (uint32_t i = 0; i < queueFamilyCount; ++i)
+    {
+        VkBool32 presentSupport = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(vkCtx.physicalDevice, i, vkCtx.surface, &presentSupport);
+        if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport)
+        {
+            vkCtx.queueFamilyIndex = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+    {
+        std::cerr << "No suitable queue family\n";
+        return false;
+    }
+
     float queuePriority = 1.0f;
-    queueCreateInfo.pQueuePriorities = &queuePriority;
-    
-    VkPhysicalDeviceFeatures deviceFeatures{};
-    
-    VkDeviceCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pQueueCreateInfos = &queueCreateInfo;
-    createInfo.queueCreateInfoCount = 1;
-    createInfo.pEnabledFeatures = &deviceFeatures;
-    
-    const std::vector<const char*> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-    createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+    VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queueInfo.queueFamilyIndex = vkCtx.queueFamilyIndex;
+    queueInfo.queueCount = 1;
+    queueInfo.pQueuePriorities = &queuePriority;
 
-    if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS) return false;
-    
-    vkGetDeviceQueue(device, 0, 0, &graphicsQueue);
-    graphicsQueueIndex = 0;
-    
-    return true;
-}
+    const char *deviceExts[] = {"VK_KHR_swapchain"};
+    VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueInfo;
+    deviceInfo.enabledExtensionCount = 1;
+    deviceInfo.ppEnabledExtensionNames = deviceExts;
 
-// 스왑체인 생성
-bool createSwapchain(GLFWwindow* window) {
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
+    if (vkCreateDevice(vkCtx.physicalDevice, &deviceInfo, nullptr, &vkCtx.device) != VK_SUCCESS)
+    {
+        std::cerr << "Failed to create device\n";
+        return false;
+    }
+    vkGetDeviceQueue(vkCtx.device, vkCtx.queueFamilyIndex, 0, &vkCtx.queue);
 
-    VkSwapchainCreateInfoKHR createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    createInfo.surface = surface;
-    createInfo.minImageCount = 2; // 더블 버퍼링
-    createInfo.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
-    createInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-    createInfo.imageExtent = { (uint32_t)width, (uint32_t)height };
-    createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    createInfo.clipped = VK_TRUE;
-    createInfo.oldSwapchain = VK_NULL_HANDLE;
+    // --- Swapchain ---
+    VkSurfaceCapabilitiesKHR surfCaps;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vkCtx.physicalDevice, vkCtx.surface, &surfCaps);
+    vkCtx.extent = {WIDTH, HEIGHT};
 
-    if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapchain) != VK_SUCCESS) return false;
+    uint32_t formatCount;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(vkCtx.physicalDevice, vkCtx.surface, &formatCount, nullptr);
+    std::vector<VkSurfaceFormatKHR> formats(formatCount);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(vkCtx.physicalDevice, vkCtx.surface, &formatCount, formats.data());
+
+    // UNORM format 우선 (SRGB는 Skia wrap 설정이 어려움, 생성 실패할 수 있음)
+    vkCtx.format = formats[0].format;
+    VkColorSpaceKHR colorSpace = formats[0].colorSpace;
+
+    for (const auto &fmt : formats)
+    {
+        std::cout << "Available: format=" << fmt.format << ", colorSpace=" << fmt.colorSpace << std::endl;
+        // BGRA UNORM 우선
+        if (fmt.format == VK_FORMAT_B8G8R8A8_UNORM)
+        {
+            vkCtx.format = fmt.format;
+            colorSpace = fmt.colorSpace;
+            std::cout << "Selected: VK_FORMAT_B8G8R8A8_UNORM (" << vkCtx.format << ")" << std::endl;
+            break;
+        }
+        if (fmt.format == VK_FORMAT_R8G8B8A8_UNORM)
+        {
+            vkCtx.format = fmt.format;
+            colorSpace = fmt.colorSpace;
+            std::cout << "Selected: VK_FORMAT_R8G8B8A8_UNORM (" << vkCtx.format << ")" << std::endl;
+            break;
+        }
+        if (vkCtx.format == formats[0].format)
+        {
+            std::cout << "Using default format: " << vkCtx.format << std::endl;
+        }
+    }
+
+    VkSwapchainCreateInfoKHR swapInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    swapInfo.surface = vkCtx.surface;
+    swapInfo.minImageCount = surfCaps.minImageCount + 1;
+    swapInfo.imageFormat = vkCtx.format;
+    swapInfo.imageColorSpace = colorSpace;
+    swapInfo.imageExtent = vkCtx.extent;
+    swapInfo.imageArrayLayers = 1;
+    swapInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapInfo.preTransform = surfCaps.currentTransform;
+    swapInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    swapInfo.clipped = VK_TRUE;
+    swapInfo.oldSwapchain = VK_NULL_HANDLE;
+
+    if (vkCreateSwapchainKHR(vkCtx.device, &swapInfo, nullptr, &vkCtx.swapchain) != VK_SUCCESS)
+    {
+        std::cerr << "Failed to create swapchain\n";
+        return false;
+    }
 
     uint32_t imageCount;
-    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, nullptr);
-    swapchainImages.resize(imageCount);
-    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, swapchainImages.data());
+    vkGetSwapchainImagesKHR(vkCtx.device, vkCtx.swapchain, &imageCount, nullptr);
+    vkCtx.images.resize(imageCount);
+    vkGetSwapchainImagesKHR(vkCtx.device, vkCtx.swapchain, &imageCount, vkCtx.images.data());
 
-    return true;
-}
+    PFN_vkEnumerateInstanceVersion localEnumerateInstanceVersion =
+        reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+            vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
 
-// 이미지 뷰 및 동기화 객체 생성
-bool createSyncObjects() {
-    inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-    imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-    renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    // --- Skia Vulkan Context ---
+    skgpu::VulkanBackendContext backendContext{};
+    backendContext.fInstance = vkCtx.instance;
+    backendContext.fPhysicalDevice = vkCtx.physicalDevice;
+    backendContext.fDevice = vkCtx.device;
+    backendContext.fQueue = vkCtx.queue;
+    backendContext.fGraphicsQueueIndex = vkCtx.queueFamilyIndex;
+    backendContext.fMaxAPIVersion = VK_API_VERSION_1_3;
+    backendContext.fGetProc = [localEnumerateInstanceVersion](const char *procName, VkInstance inst, VkDevice dev) -> PFN_vkVoidFunction
+    {
+        if (strcmp(procName, "vkEnumerateInstanceVersion") == 0)
+        {
+            return reinterpret_cast<PFN_vkVoidFunction>(localEnumerateInstanceVersion);
+        }
+        PFN_vkVoidFunction func = nullptr;
+        if (dev != VK_NULL_HANDLE)
+        {
+            func = vkGetDeviceProcAddr(dev, procName);
+        }
+        if (!func && inst != VK_NULL_HANDLE)
+        {
+            func = vkGetInstanceProcAddr(inst, procName);
+        }
+        if (!func)
+        {
+            func = vkGetInstanceProcAddr(VK_NULL_HANDLE, procName);
+        }
+        // std::cout << "func ret = " << func << std::endl;
+        return func;
+    };
 
-    VkSemaphoreCreateInfo semaphoreInfo{};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    std::cout << "Instance: " << vkCtx.instance
+              << ", PhysicalDevice: " << vkCtx.physicalDevice
+              << ", Device: " << vkCtx.device
+              << ", Queue: " << vkCtx.queue
+              << ", QueueFamilyIndex: " << vkCtx.queueFamilyIndex
+              << std::endl;
 
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
-            vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
+    auto fn = vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion");
+    if (!fn)
+        std::cerr << "vkEnumerateInstanceVersion is nullptr\n";
+    else
+        std::cout << "vkEnumerateInstanceVersion ok\n";
+
+    skContext = GrDirectContexts::MakeVulkan(backendContext);
+    if (!skContext)
+    {
+        std::cerr << "Failed to create Skia Vulkan context\n";
+        return false;
+    }
+
+    // Create Skia surfaces
+    vkCtx.skSurfaces.resize(vkCtx.images.size());
+    for (size_t i = 0; i < vkCtx.images.size(); ++i)
+    {
+        GrVkImageInfo imgInfo{};
+        imgInfo.fImage = vkCtx.images[i];
+        imgInfo.fImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imgInfo.fFormat = vkCtx.format;
+        imgInfo.fLevelCount = 1;
+        imgInfo.fCurrentQueueFamily = vkCtx.queueFamilyIndex;
+
+        GrBackendRenderTarget backendRT = GrBackendRenderTargets::MakeVk(WIDTH, HEIGHT, imgInfo);
+        if (!backendRT.isValid())
+        {
+            std::cerr << "Invalid GrBackendRenderTarget for image " << i << std::endl;
+            continue;
+        }
+
+        SkColorType colorType;
+        if (vkCtx.format == VK_FORMAT_B8G8R8A8_UNORM || vkCtx.format == VK_FORMAT_B8G8R8A8_SRGB)
+        {
+            colorType = kBGRA_8888_SkColorType;
+        }
+        else if (vkCtx.format == VK_FORMAT_R8G8B8A8_UNORM || vkCtx.format == VK_FORMAT_R8G8B8A8_SRGB)
+        {
+            colorType = kRGBA_8888_SkColorType;
+        }
+        else
+        {
+            colorType = kRGBA_8888_SkColorType;
+        }
+
+        vkCtx.skSurfaces[i] = SkSurfaces::WrapBackendRenderTarget(
+            skContext.get(),
+            backendRT,
+            kTopLeft_GrSurfaceOrigin,
+            colorType,
+            nullptr, // colorSpace
+            nullptr  // surfaceProps
+        );
+
+        if (!vkCtx.skSurfaces[i])
+        {
+            std::cerr << "Failed to wrap surface " << i << std::endl;
             return false;
         }
     }
+
     return true;
 }
 
-
-void createSkiaContextAndSurfaces(
-    VkInstance instance,
-    VkPhysicalDevice physicalDevice,
-    VkDevice device,
-    VkQueue graphicsQueue,
-    uint32_t graphicsQueueIndex,
-    const std::vector<VkImage>& swapchainImages,
-    std::vector<sk_sp<SkSurface>>& skiaSurfaces,
-    sk_sp<GrDirectContext>& skiaContext) 
+void drawFrame(SkCanvas *canvas)
 {
-    // // 1. Create and populate the VulkanBackendContext struct
-    // skgpu::VulkanBackendContext vkBackendContext;
-    // vkBackendContext.fInstance = instance;
-    // vkBackendContext.fPhysicalDevice = physicalDevice;
-    // vkBackendContext.fDevice = device;
-    // vkBackendContext.fQueue = graphicsQueue;
-    // vkBackendContext.fGraphicsQueueIndex = graphicsQueueIndex;
-    
-    // // 2. Add the getProc function pointer directly to the struct
-    // vkBackendContext.fGet  = [](const char* name, VkInstance instance, VkDevice device) {
-    //     if (instance) {
-    //         return vkGetInstanceProcAddr(instance, name);
-    //     }
-    //     return vkGetDeviceProcAddr(device, name);
-    // };
+    canvas->clear(SK_ColorWHITE);
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setStyle(SkPaint::kFill_Style);
+    paint.setColor(SK_ColorRED);
 
-    // // 3. Pass the populated struct to the GrDirectContext factory function
-    // skiaContext = GrDirectContext::MakeVulkan(vkBackendContext);
+    SkPath triangle;
+    triangle.moveTo(400, 100);
+    triangle.lineTo(200, 500);
+    triangle.lineTo(600, 500);
+    triangle.close();
 
-    // if (!skiaContext) {
-    //     std::cerr << "Failed to create Skia GrDirectContext!" << std::endl;
-    //     return;
-    // }
-
-    // // Loop for creating SkSurfaces remains the same
-    // for (const auto& image : swapchainImages) {
-    //     GrVkImageInfo vkImageInfo{
-    //         .fImage = image,
-    //         .fImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    //         .fFormat = VK_FORMAT_B8G8R8A8_UNORM,
-    //         .fImageTiling = VK_IMAGE_TILING_OPTIMAL,
-    //         .fImageUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-    //         .fSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    //         .fCurrentQueueFamily = graphicsQueueIndex
-    //     };
-        
-    //     GrBackendTexture backendTexture(1920, 1080, vkImageInfo);
-        
-    //     sk_sp<SkSurface> surface = SkSurface::MakeFromBackendTexture(
-    //         skiaContext.get(),
-    //         backendTexture,
-    //         kTopLeft_GrSurfaceOrigin,
-    //         1,
-    //         kBGRA_8888_SkColorType
-    //     );
-
-    //     if (!surface) {
-    //         continue;
-    //     }
-
-    //     skiaSurfaces.push_back(surface);
-    // }
+    canvas->drawPath(triangle, paint);
 }
 
-
-// 렌더링 루프
-void drawFrame() {
-    static size_t currentFrame = 0;
-    vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, &inFlightFences[currentFrame]);
-    
-    uint32_t imageIndex;
-    vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-
-    SkCanvas* canvas = skiaSurfaces[imageIndex]->getCanvas();
-    if (canvas) {
-        canvas->clear(SK_ColorBLUE);
-        SkPaint paint;
-        paint.setColor(SK_ColorRED);
-        SkRect rect = SkRect::MakeXYWH(100.0f, 100.0f, 200.0f, 150.0f);
-        canvas->drawRect(rect, paint);
-    }
-    
-    skiaContext->flushAndSubmit();
-
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
-    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores;
-    submitInfo.pWaitDstStageMask = waitStages;
-    submitInfo.commandBufferCount = 0; // Skia가 내부적으로 처리
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &renderFinishedSemaphores[currentFrame];
-    
-    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
-        std::cerr << "Failed to submit draw command buffer!" << std::endl;
+int main()
+{
+    if (!glfwInit()) {
+        return -1;
     }
 
-    VkPresentInfoKHR presentInfo{};
-    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &renderFinishedSemaphores[currentFrame];
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &swapchain;
-    presentInfo.pImageIndices = &imageIndex;
-    
-    vkQueuePresentKHR(graphicsQueue, &presentInfo);
-    
-    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-}
-
-int main() {
-    glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Skia Vulkan Full Example", nullptr, nullptr);
-    
-    if (!createVulkanInstance() ||
-        glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS ||
-        !createLogicalDevice() ||
-        !createSwapchain(window) ||
-        !createSyncObjects()) {
-        std::cerr << "Vulkan setup failed!" << std::endl;
-        return 1;
+    GLFWwindow *window = glfwCreateWindow(WIDTH, HEIGHT, "Skia Vulkan", nullptr, nullptr);
+    if (!window) {
+        return -1;
     }
-    
-    // createSkiaContextAndSurfaces();
-    
-    while (!glfwWindowShouldClose(window)) {
+
+    VulkanContext vkCtx{};
+    sk_sp<GrDirectContext> skContext;
+
+    if (!setupVulkan(window, vkCtx, skContext))
+    {
+        std::cerr << "Failed Vulkan setup\n";
+        return -1;
+    }
+    std::cout << "Setup vulkan Successfully" << std::endl;
+
+    while (!glfwWindowShouldClose(window))
+    {
         glfwPollEvents();
-        // drawFrame();
+
+        uint32_t imageIndex;
+        VkResult result = vkAcquireNextImageKHR(vkCtx.device, vkCtx.swapchain, UINT64_MAX,
+                                                VK_NULL_HANDLE, VK_NULL_HANDLE, &imageIndex);
+        if (result != VK_SUCCESS)
+        {
+            std::cerr << "Failed to acquire swapchain image" << std::endl;
+        }
+
+        if (vkCtx.skSurfaces[imageIndex])
+        {
+            drawFrame(vkCtx.skSurfaces[imageIndex]->getCanvas());
+            skContext->flushAndSubmit();
+        }
+
+        // Present swapchain
+        VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = &vkCtx.swapchain;
+        presentInfo.pImageIndices = &imageIndex;
+
+        vkQueuePresentKHR(vkCtx.queue, &presentInfo);
     }
-    
-    vkDeviceWaitIdle(device);
-    cleanup();
-    
+
+    for (auto &s : vkCtx.skSurfaces)
+        s.reset();
+    skContext.reset();
+
+    vkDestroySwapchainKHR(vkCtx.device, vkCtx.swapchain, nullptr);
+    vkDestroyDevice(vkCtx.device, nullptr);
+    vkDestroySurfaceKHR(vkCtx.instance, vkCtx.surface, nullptr);
+    vkDestroyInstance(vkCtx.instance, nullptr);
+
+    glfwDestroyWindow(window);
+    glfwTerminate();
     return 0;
 }

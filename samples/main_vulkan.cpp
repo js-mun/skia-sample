@@ -73,32 +73,50 @@ bool setupVulkan(GLFWwindow *window, VulkanContext &vkCtx, sk_sp<GrDirectContext
     vkEnumeratePhysicalDevices(vkCtx.instance, &deviceCount, nullptr);
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(vkCtx.instance, &deviceCount, devices.data());
-    vkCtx.physicalDevice = devices[0];
+    vkCtx.physicalDevice = VK_NULL_HANDLE;
 
+    VkPhysicalDevice bestDevice = VK_NULL_HANDLE;
+    for (auto device : devices) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(device, &props);
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+            std::cout << "Ignore Software GPU (llvmpipe)" << std::endl;
+            continue;
+        }
+
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+            bestDevice = device;
+            break;
+        }
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+            bestDevice = device; // 외장 없을 경우 사용 (iGPU)
+        }
+    }
+    if (bestDevice == VK_NULL_HANDLE) {
+        std::cerr << "No suitable hardware GPU found!" << std::endl;
+        return false;
+    }
+    vkCtx.physicalDevice = bestDevice;
+    
     // --- Queue Family ---
     uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(vkCtx.physicalDevice, &queueFamilyCount, nullptr);
     std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
     vkGetPhysicalDeviceQueueFamilyProperties(vkCtx.physicalDevice, &queueFamilyCount, queueFamilies.data());
-
     bool found = false;
-    for (uint32_t i = 0; i < queueFamilyCount; ++i)
-    {
+    for (uint32_t i = 0; i < queueFamilyCount; ++i) {
         VkBool32 presentSupport = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(vkCtx.physicalDevice, i, vkCtx.surface, &presentSupport);
-        if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport)
-        {
+        if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport) {
             vkCtx.queueFamilyIndex = i;
             found = true;
             break;
         }
     }
-    if (!found)
-    {
+    if (!found) {
         std::cerr << "No suitable queue family\n";
         return false;
     }
-
     float queuePriority = 1.0f;
     VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queueInfo.queueFamilyIndex = vkCtx.queueFamilyIndex;
@@ -112,9 +130,8 @@ bool setupVulkan(GLFWwindow *window, VulkanContext &vkCtx, sk_sp<GrDirectContext
     deviceInfo.enabledExtensionCount = 1;
     deviceInfo.ppEnabledExtensionNames = deviceExts;
 
-    if (vkCreateDevice(vkCtx.physicalDevice, &deviceInfo, nullptr, &vkCtx.device) != VK_SUCCESS)
-    {
-        std::cerr << "Failed to create device\n";
+    if (vkCreateDevice(vkCtx.physicalDevice, &deviceInfo, nullptr, &vkCtx.device) != VK_SUCCESS) {
+        std::cerr << "Failed to create device" << std::endl;
         return false;
     }
     vkGetDeviceQueue(vkCtx.device, vkCtx.queueFamilyIndex, 0, &vkCtx.queue);
@@ -183,9 +200,9 @@ bool setupVulkan(GLFWwindow *window, VulkanContext &vkCtx, sk_sp<GrDirectContext
     vkCtx.images.resize(imageCount);
     vkGetSwapchainImagesKHR(vkCtx.device, vkCtx.swapchain, &imageCount, vkCtx.images.data());
 
-    PFN_vkEnumerateInstanceVersion localEnumerateInstanceVersion =
-        reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
-            vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
+    std::cout << "SurfCaps imageCount: " << surfCaps.minImageCount 
+            << ", Swapchain imageCount: " << imageCount << std::endl;
+
 
     // --- Skia Vulkan Context ---
     skgpu::VulkanBackendContext backendContext{};
@@ -195,12 +212,8 @@ bool setupVulkan(GLFWwindow *window, VulkanContext &vkCtx, sk_sp<GrDirectContext
     backendContext.fQueue = vkCtx.queue;
     backendContext.fGraphicsQueueIndex = vkCtx.queueFamilyIndex;
     backendContext.fMaxAPIVersion = VK_API_VERSION_1_3;
-    backendContext.fGetProc = [localEnumerateInstanceVersion](const char *procName, VkInstance inst, VkDevice dev) -> PFN_vkVoidFunction
+    backendContext.fGetProc = [](const char *procName, VkInstance inst, VkDevice dev) -> PFN_vkVoidFunction
     {
-        if (strcmp(procName, "vkEnumerateInstanceVersion") == 0)
-        {
-            return reinterpret_cast<PFN_vkVoidFunction>(localEnumerateInstanceVersion);
-        }
         PFN_vkVoidFunction func = nullptr;
         if (dev != VK_NULL_HANDLE)
         {
@@ -214,7 +227,7 @@ bool setupVulkan(GLFWwindow *window, VulkanContext &vkCtx, sk_sp<GrDirectContext
         {
             func = vkGetInstanceProcAddr(VK_NULL_HANDLE, procName);
         }
-        // std::cout << "func ret = " << func << std::endl;
+        // std::cout << "func ret = " << func << ", proc name: " << procName << std::endl;
         return func;
     };
 
@@ -224,12 +237,6 @@ bool setupVulkan(GLFWwindow *window, VulkanContext &vkCtx, sk_sp<GrDirectContext
               << ", Queue: " << vkCtx.queue
               << ", QueueFamilyIndex: " << vkCtx.queueFamilyIndex
               << std::endl;
-
-    auto fn = vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion");
-    if (!fn)
-        std::cerr << "vkEnumerateInstanceVersion is nullptr\n";
-    else
-        std::cout << "vkEnumerateInstanceVersion ok\n";
 
     skContext = GrDirectContexts::MakeVulkan(backendContext);
     if (!skContext)
